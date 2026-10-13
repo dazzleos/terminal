@@ -1353,3 +1353,63 @@ test "globbing and tab completion" {
     defer comp3.deinit(gpa);
     try std.testing.expectEqualStrings("cd docs/", comp3.replacement_line.?);
 }
+
+test "network tools: ping and wget over loopback" {
+    const gpa = std.testing.allocator;
+    var box = try TestSandbox.create(gpa, "net");
+    defer box.destroy();
+
+    var sh = try Shell.initTest(gpa, box.path);
+    defer sh.deinit();
+
+    // Test ping -c 1 localhost.
+    sh.executeLine("ping -c 1 localhost");
+    try std.testing.expectEqual(@as(u8, 0), sh.last_status);
+    try std.testing.expect(std.mem.startsWith(u8, lastStdout(&sh), "rtt min/avg/max ="));
+
+    // Spin up a one-shot HTTP server on 127.0.0.1:0 to test wget.
+    const lfd: linux.fd_t = @intCast(try sys.check(linux.socket(linux.AF.INET, linux.SOCK.STREAM | linux.SOCK.CLOEXEC, 0)));
+    defer sys.close(lfd);
+    var bind_addr: linux.sockaddr.in = .{
+        .port = 0,
+        .addr = @bitCast([4]u8{ 127, 0, 0, 1 }),
+    };
+    _ = try sys.check(linux.bind(lfd, @ptrCast(&bind_addr), @sizeOf(linux.sockaddr.in)));
+    _ = try sys.check(linux.listen(lfd, 2));
+    var bound_len: linux.socklen_t = @sizeOf(linux.sockaddr.in);
+    _ = try sys.check(linux.getsockname(lfd, @ptrCast(&bind_addr), &bound_len));
+    const port = std.mem.bigToNative(u16, bind_addr.port);
+
+    const ServerThread = struct {
+        fn serve(fd: linux.fd_t) void {
+            for (0..2) |_| {
+                const c_rc = linux.accept4(fd, null, null, linux.SOCK.CLOEXEC);
+                if (linux.errno(c_rc) != .SUCCESS) return;
+                const cfd: linux.fd_t = @intCast(c_rc);
+                defer sys.close(cfd);
+                var req_buf: [512]u8 = undefined;
+                _ = linux.read(cfd, &req_buf, req_buf.len);
+                const resp =
+                    "HTTP/1.1 200 OK\r\n" ++
+                    "Content-Length: 19\r\n" ++
+                    "Connection: close\r\n\r\n" ++
+                    "fetched from dazzle";
+                _ = linux.write(cfd, resp.ptr, resp.len);
+            }
+        }
+    };
+    const thr = try std.Thread.spawn(.{}, ServerThread.serve, .{lfd});
+    defer thr.join();
+
+    var cmd_buf: [256]u8 = undefined;
+    const cmd1 = try std.fmt.bufPrint(&cmd_buf, "wget http://127.0.0.1:{d}/hello.txt && cat hello.txt", .{port});
+    sh.executeLine(cmd1);
+    try std.testing.expectEqual(@as(u8, 0), sh.last_status);
+    try std.testing.expectEqualStrings("fetched from dazzle", lastStdout(&sh));
+
+    const cmd2 = try std.fmt.bufPrint(&cmd_buf, "wget -q -O - http://127.0.0.1:{d}/hello.txt", .{port});
+    sh.executeLine(cmd2);
+    try std.testing.expectEqual(@as(u8, 0), sh.last_status);
+    try std.testing.expectEqualStrings("fetched from dazzle", lastStdout(&sh));
+}
+

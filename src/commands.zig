@@ -86,6 +86,7 @@ pub const commands = [_]Command{
     .{ .name = "mkdir", .usage = "mkdir [-p] <folder>...", .summary = "Make new folders (-p for parents too)", .run = cmdMkdir },
     .{ .name = "mv", .usage = "mv [-f] [-n] <source>... <dest>", .summary = "Move or rename files and folders", .run = cmdMv },
     .{ .name = "open", .usage = "open <app|file>", .summary = "Open an app or edit a text file", .run = cmdOpen },
+    .{ .name = "ping", .usage = "ping [-c count] [-W timeout] [-s size] [-q] <host>", .summary = "Send ICMP echo requests to a network host", .run = cmdPing },
     .{ .name = "ps", .usage = "ps", .summary = "List the programs that are running", .run = cmdPs },
     .{ .name = "pwd", .usage = "pwd", .summary = "Print the working folder", .run = cmdPwd },
     .{ .name = "readlink", .usage = "readlink [-f] <path>...", .summary = "Print where a symbolic link points", .run = cmdReadlink },
@@ -105,6 +106,7 @@ pub const commands = [_]Command{
     .{ .name = "unset", .usage = "unset <NAME>...", .summary = "Remove environment variables", .run = cmdUnset },
     .{ .name = "uptime", .usage = "uptime", .summary = "Print how long the system has been running", .run = cmdUptime },
     .{ .name = "wc", .usage = "wc [-l] [-w] [-c] [file...]", .summary = "Count lines, words and bytes", .run = cmdWc },
+    .{ .name = "wget", .usage = "wget [-q] [-O file] [-P dir] <url>...", .summary = "Download files from the web over HTTP or HTTPS", .run = cmdWget },
     .{ .name = "which", .usage = "which <name>...", .summary = "Identify built-in commands", .run = cmdWhich },
     .{ .name = "whoami", .usage = "whoami", .summary = "Print the current user's name", .run = cmdWhoami },
     .{ .name = "xxd", .usage = "xxd [-n bytes] [file...]", .summary = "Print bytes in hexadecimal and ASCII", .run = cmdHexdump },
@@ -3369,6 +3371,580 @@ fn cmdHistory(cx: *Context, args: []const []const u8) u8 {
     return 0;
 }
 
+// --- Network commands (`ping`, `wget`) -----------------------------------------
+
+fn cmdPing(cx: *Context, args: []const []const u8) u8 {
+    var count: u32 = 4;
+    var timeout_sec: u32 = 2;
+    var payload_size: usize = 56;
+    var quiet = false;
+    var host: ?[]const u8 = null;
+
+    var i: usize = 0;
+    while (i < args.len) : (i += 1) {
+        const arg = args[i];
+        if (std.mem.eql(u8, arg, "-c") or (std.mem.startsWith(u8, arg, "-c") and arg.len > 2)) {
+            const val = if (arg.len > 2) arg[2..] else blk: {
+                i += 1;
+                if (i >= args.len) {
+                    cx.errPrint("ping: option requires an argument -- 'c'\n", .{});
+                    return 1;
+                }
+                break :blk args[i];
+            };
+            const parsed = std.fmt.parseInt(u32, val, 10) catch 0;
+            if (parsed == 0 or parsed > 100) {
+                cx.errPrint("ping: invalid count '{s}' (must be 1..100)\n", .{val});
+                return 1;
+            }
+            count = parsed;
+        } else if (std.mem.eql(u8, arg, "-W") or (std.mem.startsWith(u8, arg, "-W") and arg.len > 2)) {
+            const val = if (arg.len > 2) arg[2..] else blk: {
+                i += 1;
+                if (i >= args.len) {
+                    cx.errPrint("ping: option requires an argument -- 'W'\n", .{});
+                    return 1;
+                }
+                break :blk args[i];
+            };
+            const parsed = std.fmt.parseInt(u32, val, 10) catch 0;
+            if (parsed == 0 or parsed > 30) {
+                cx.errPrint("ping: invalid timeout '{s}' (must be 1..30)\n", .{val});
+                return 1;
+            }
+            timeout_sec = parsed;
+        } else if (std.mem.eql(u8, arg, "-s") or (std.mem.startsWith(u8, arg, "-s") and arg.len > 2)) {
+            const val = if (arg.len > 2) arg[2..] else blk: {
+                i += 1;
+                if (i >= args.len) {
+                    cx.errPrint("ping: option requires an argument -- 's'\n", .{});
+                    return 1;
+                }
+                break :blk args[i];
+            };
+            const parsed = std.fmt.parseInt(usize, val, 10) catch {
+                cx.errPrint("ping: invalid packet size '{s}'\n", .{val});
+                return 1;
+            };
+            if (parsed > 1472) {
+                cx.errPrint("ping: packet size too large '{s}' (max 1472)\n", .{val});
+                return 1;
+            }
+            payload_size = parsed;
+        } else if (arg.len > 1 and arg[0] == '-') {
+            for (arg[1..]) |ch| switch (ch) {
+                'q' => quiet = true,
+                '4' => {},
+                else => {
+                    cx.errPrint("ping: invalid option -- '{c}'\n", .{ch});
+                    return 1;
+                },
+            };
+        } else {
+            host = arg;
+        }
+    }
+
+    const target = host orelse {
+        cx.errPrint("ping: usage: ping [-c count] [-W timeout] [-s size] [-q] <host>\n", .{});
+        return 1;
+    };
+
+    const ip = resolveHostIp4(cx.shell.hostnameSlice(), target) orelse {
+        cx.errPrint("ping: {s}: Name or service not known\n", .{target});
+        return 2;
+    };
+
+    var ip_buf: [16]u8 = undefined;
+    const ip_str = std.fmt.bufPrint(&ip_buf, "{d}.{d}.{d}.{d}", .{ ip[0], ip[1], ip[2], ip[3] }) catch "";
+    cx.print("PING {s} ({s}) {d}({d}) bytes of data.\n", .{
+        target,
+        ip_str,
+        payload_size,
+        payload_size + 28,
+    });
+
+    const start_ns = sys.nowNs();
+    const timeout_ms: i32 = @intCast(timeout_sec * 1000);
+    const id: u16 = @truncate(@as(u32, @bitCast(linux.getpid())));
+
+    var transmitted: u32 = 0;
+    var received: u32 = 0;
+    var min_us: u64 = std.math.maxInt(u64);
+    var max_us: u64 = 0;
+    var sum_us: u64 = 0;
+
+    var seq: u16 = 1;
+    while (seq <= count) : (seq += 1) {
+        if (seq > 1) {
+            const delay_ns: isize = if (ip[0] == 127) 20 * std.time.ns_per_ms else 200 * std.time.ns_per_ms;
+            var ts: linux.timespec = .{ .sec = 0, .nsec = delay_ns };
+            _ = linux.nanosleep(&ts, null);
+        }
+        transmitted += 1;
+        const probe = pingProbeIp4(ip, id, seq, payload_size, timeout_ms) catch |err| {
+            cx.errPrint("ping: sendto: {s}\n", .{@errorName(err)});
+            return 1;
+        };
+        if (probe) |reply| {
+            received += 1;
+            const rtt_us: u64 = @max(reply.rtt_ns / 1000, 1);
+            min_us = @min(min_us, rtt_us);
+            max_us = @max(max_us, rtt_us);
+            sum_us += rtt_us;
+            if (!quiet) {
+                cx.print("{d} bytes from {s}: icmp_seq={d} ttl={d} time={d}.{d:0>2} ms\n", .{
+                    payload_size + 8,
+                    ip_str,
+                    seq,
+                    reply.ttl,
+                    rtt_us / 1000,
+                    (rtt_us % 1000) / 10,
+                });
+            }
+        }
+    }
+
+    const total_ms: u64 = (sys.nowNs() -| start_ns) / std.time.ns_per_ms;
+    const loss_pct: u32 = if (transmitted > 0) ((transmitted - received) * 100) / transmitted else 0;
+    cx.print("\n--- {s} ping statistics ---\n", .{target});
+    cx.print("{d} packets transmitted, {d} received, {d}% packet loss, time {d}ms\n", .{
+        transmitted,
+        received,
+        loss_pct,
+        total_ms,
+    });
+    if (received > 0) {
+        const avg_us = sum_us / received;
+        cx.print("rtt min/avg/max = {d}.{d:0>2}/{d}.{d:0>2}/{d}.{d:0>2} ms\n", .{
+            min_us / 1000,
+            (min_us % 1000) / 10,
+            avg_us / 1000,
+            (avg_us % 1000) / 10,
+            max_us / 1000,
+            (max_us % 1000) / 10,
+        });
+        return 0;
+    }
+    return 1;
+}
+
+const PingReply = struct {
+    rtt_ns: u64,
+    ttl: u8,
+};
+
+fn pingProbeIp4(ip: sys.network.Ip4, id: u16, seq: u16, payload_size: usize, timeout_ms: i32) !?PingReply {
+    // Try an unprivileged ICMP datagram socket first, then raw ICMP.
+    var is_raw = false;
+    var sock_rc = linux.socket(linux.AF.INET, linux.SOCK.DGRAM | linux.SOCK.CLOEXEC, linux.IPPROTO.ICMP);
+    if (linux.errno(sock_rc) != .SUCCESS) {
+        sock_rc = linux.socket(linux.AF.INET, linux.SOCK.RAW | linux.SOCK.CLOEXEC, linux.IPPROTO.ICMP);
+        if (linux.errno(sock_rc) == .SUCCESS) {
+            is_raw = true;
+        } else {
+            const e = linux.errno(sock_rc);
+            if (e == .ACCES or e == .PERM or e == .PROTONOSUPPORT) {
+                return tcpFallbackProbeIp4(ip, timeout_ms);
+            }
+            return error.NetworkError;
+        }
+    }
+    const fd: linux.fd_t = @intCast(sock_rc);
+    defer sys.close(fd);
+
+    var pkt_buf: [8 + 1472]u8 = undefined;
+    const pkt_len = 8 + @min(payload_size, 1472);
+    pkt_buf[0] = 8; // ICMP Echo Request
+    pkt_buf[1] = 0;
+    pkt_buf[2] = 0;
+    pkt_buf[3] = 0;
+    std.mem.writeInt(u16, pkt_buf[4..6], id, .big);
+    std.mem.writeInt(u16, pkt_buf[6..8], seq, .big);
+    for (pkt_buf[8..pkt_len], 0..) |*b, idx| b.* = @truncate(0x10 + idx);
+    const csum = icmpChecksum(pkt_buf[0..pkt_len]);
+    std.mem.writeInt(u16, pkt_buf[2..4], csum, .big);
+
+    const dest: linux.sockaddr.in = .{
+        .port = 0,
+        .addr = @bitCast(ip),
+    };
+    const t0 = sys.nowNs();
+    const sent = linux.sendto(fd, &pkt_buf, pkt_len, 0, @ptrCast(&dest), @sizeOf(linux.sockaddr.in));
+    if (linux.errno(sent) != .SUCCESS) return error.SendFailed;
+
+    const deadline_ns = t0 + @as(u64, @intCast(timeout_ms)) * std.time.ns_per_ms;
+    var reply_buf: [1600]u8 = undefined;
+    while (true) {
+        const now = sys.nowNs();
+        const rem_ms: i32 = @intCast((deadline_ns -| now) / std.time.ns_per_ms);
+        var pfd = [_]linux.pollfd{.{ .fd = fd, .events = linux.POLL.IN, .revents = 0 }};
+        const prc = linux.poll(&pfd, 1, rem_ms);
+        if (linux.errno(prc) == .INTR) continue;
+        if (prc != 1) return null;
+
+        const n = linux.recvfrom(fd, &reply_buf, reply_buf.len, 0, null, null);
+        if (linux.errno(n) == .INTR) continue;
+        if (linux.errno(n) != .SUCCESS or n < 8) return null;
+        const rtt_ns = @max(sys.nowNs() -| t0, 1);
+
+        var icmp_offset: usize = 0;
+        var ttl: u8 = 64;
+        if (is_raw and n >= 28 and (reply_buf[0] >> 4) == 4) {
+            const ihl = @as(usize, reply_buf[0] & 0x0f) * 4;
+            if (ihl >= 20 and ihl + 8 <= n) {
+                ttl = reply_buf[8];
+                icmp_offset = ihl;
+            }
+        }
+        const icmp = reply_buf[icmp_offset..n];
+        if (icmp.len >= 8 and icmp[0] == 0 and icmp[1] == 0) {
+            const r_seq = std.mem.readInt(u16, icmp[6..8], .big);
+            if (r_seq == seq) return .{ .rtt_ns = rtt_ns, .ttl = ttl };
+        }
+        if (sys.nowNs() >= deadline_ns) return null;
+    }
+}
+
+/// Fallback probe when the kernel blocks unprivileged ICMP sockets (`ping_group_range`).
+fn tcpFallbackProbeIp4(ip: sys.network.Ip4, timeout_ms: i32) !?PingReply {
+    const rc = linux.socket(linux.AF.INET, linux.SOCK.STREAM | linux.SOCK.NONBLOCK | linux.SOCK.CLOEXEC, 0);
+    if (linux.errno(rc) != .SUCCESS) return error.NetworkError;
+    const fd: linux.fd_t = @intCast(rc);
+    defer sys.close(fd);
+
+    const dest: linux.sockaddr.in = .{
+        .port = std.mem.nativeToBig(u16, 80),
+        .addr = @bitCast(ip),
+    };
+    const t0 = sys.nowNs();
+    const crc = linux.connect(fd, @ptrCast(&dest), @sizeOf(linux.sockaddr.in));
+    switch (linux.errno(crc)) {
+        .SUCCESS, .CONNREFUSED => return .{ .rtt_ns = @max(sys.nowNs() -| t0, 1), .ttl = 64 },
+        .INPROGRESS, .AGAIN => {},
+        else => return null,
+    }
+    var pfd = [_]linux.pollfd{.{ .fd = fd, .events = linux.POLL.OUT | linux.POLL.ERR, .revents = 0 }};
+    if (linux.poll(&pfd, 1, timeout_ms) != 1) return null;
+    var so_err: i32 = 0;
+    var err_len: linux.socklen_t = @sizeOf(i32);
+    if (linux.errno(linux.getsockopt(fd, linux.SOL.SOCKET, linux.SO.ERROR, @ptrCast(&so_err), &err_len)) != .SUCCESS) return null;
+    if (so_err == 0 or so_err == @intFromEnum(linux.E.CONNREFUSED)) {
+        return .{ .rtt_ns = @max(sys.nowNs() -| t0, 1), .ttl = 64 };
+    }
+    return null;
+}
+
+fn icmpChecksum(bytes: []const u8) u16 {
+    var sum: u32 = 0;
+    var i: usize = 0;
+    while (i + 1 < bytes.len) : (i += 2) {
+        sum += std.mem.readInt(u16, bytes[i..][0..2], .big);
+    }
+    if (i < bytes.len) {
+        sum += @as(u16, bytes[i]) << 8;
+    }
+    while (sum >> 16 != 0) {
+        sum = (sum & 0xffff) + (sum >> 16);
+    }
+    return ~@as(u16, @truncate(sum));
+}
+
+fn resolveHostIp4(local_hostname: []const u8, raw_host: []const u8) ?sys.network.Ip4 {
+    const host = std.mem.trimEnd(u8, raw_host, ".");
+    if (host.len == 0) return null;
+    if (sys.network.parseIp4(host)) |ip| return ip;
+    if (std.ascii.eqlIgnoreCase(host, "localhost") or std.ascii.eqlIgnoreCase(host, local_hostname)) {
+        return .{ 127, 0, 0, 1 };
+    }
+    // Check /etc/hosts if present.
+    var hosts_buf: [2048]u8 = undefined;
+    if (sys.readFile("/etc/hosts", &hosts_buf)) |hosts_text| {
+        var lines = std.mem.tokenizeScalar(u8, hosts_text, '\n');
+        while (lines.next()) |raw_line| {
+            const line = if (std.mem.indexOfScalar(u8, raw_line, '#')) |hash| raw_line[0..hash] else raw_line;
+            var words = std.mem.tokenizeAny(u8, line, " \t\r");
+            const ip_str = words.next() orelse continue;
+            const ip = sys.network.parseIp4(ip_str) orelse continue;
+            while (words.next()) |alias| {
+                if (std.ascii.eqlIgnoreCase(alias, host)) return ip;
+            }
+        }
+    }
+    // Query nameservers from /etc/resolv.conf.
+    var resolv_buf: [512]u8 = undefined;
+    if (sys.readFile("/etc/resolv.conf", &resolv_buf)) |resolv_text| {
+        var lines = std.mem.tokenizeScalar(u8, resolv_text, '\n');
+        while (lines.next()) |line| {
+            var words = std.mem.tokenizeAny(u8, line, " \t\r");
+            if (!std.mem.eql(u8, words.next() orelse continue, "nameserver")) continue;
+            const ns_str = words.next() orelse continue;
+            const ns_ip = sys.network.parseIp4(ns_str) orelse continue;
+            if (dnsLookupIp4(ns_ip, host)) |ip| return ip;
+        }
+    }
+    return null;
+}
+
+fn dnsLookupIp4(server: sys.network.Ip4, name: []const u8) ?sys.network.Ip4 {
+    var q_buf: [300]u8 = undefined;
+    var id_bytes: [2]u8 = undefined;
+    _ = linux.getrandom(&id_bytes, 2, 0);
+    const id = std.mem.readInt(u16, &id_bytes, .little);
+    const query = buildDnsQuery(&q_buf, id, name) orelse return null;
+
+    const rc = linux.socket(linux.AF.INET, linux.SOCK.DGRAM | linux.SOCK.CLOEXEC, 0);
+    if (linux.errno(rc) != .SUCCESS) return null;
+    const fd: linux.fd_t = @intCast(rc);
+    defer sys.close(fd);
+
+    const addr: linux.sockaddr.in = .{
+        .port = std.mem.nativeToBig(u16, 53),
+        .addr = @bitCast(server),
+    };
+    if (linux.errno(linux.connect(fd, @ptrCast(&addr), @sizeOf(linux.sockaddr.in))) != .SUCCESS) return null;
+
+    var reply: [512]u8 = undefined;
+    for (0..2) |_| {
+        if (linux.errno(linux.write(fd, query.ptr, query.len)) != .SUCCESS) return null;
+        var pfd = [_]linux.pollfd{.{ .fd = fd, .events = linux.POLL.IN, .revents = 0 }};
+        if (linux.poll(&pfd, 1, 2000) != 1) continue;
+        const n = linux.read(fd, &reply, reply.len);
+        if (linux.errno(n) != .SUCCESS) return null;
+        return parseDnsAnswer(reply[0..n], id);
+    }
+    return null;
+}
+
+fn buildDnsQuery(buf: []u8, id: u16, name: []const u8) ?[]const u8 {
+    if (name.len + 18 > buf.len) return null;
+    std.mem.writeInt(u16, buf[0..2], id, .big);
+    std.mem.writeInt(u16, buf[2..4], 0x0100, .big);
+    std.mem.writeInt(u16, buf[4..6], 1, .big);
+    @memset(buf[6..12], 0);
+    var at: usize = 12;
+    var labels = std.mem.splitScalar(u8, name, '.');
+    while (labels.next()) |label| {
+        if (label.len == 0 or label.len > 63) return null;
+        buf[at] = @intCast(label.len);
+        @memcpy(buf[at + 1 ..][0..label.len], label);
+        at += 1 + label.len;
+    }
+    buf[at] = 0;
+    std.mem.writeInt(u16, buf[at + 1 ..][0..2], 1, .big); // A
+    std.mem.writeInt(u16, buf[at + 3 ..][0..2], 1, .big); // IN
+    return buf[0 .. at + 5];
+}
+
+fn parseDnsAnswer(msg: []const u8, id: u16) ?sys.network.Ip4 {
+    if (msg.len < 12) return null;
+    if (std.mem.readInt(u16, msg[0..2], .big) != id) return null;
+    const flags = std.mem.readInt(u16, msg[2..4], .big);
+    if (flags & 0x8000 == 0 or flags & 0x000f != 0) return null;
+    const questions = std.mem.readInt(u16, msg[4..6], .big);
+    const answers = std.mem.readInt(u16, msg[6..8], .big);
+    var at: usize = 12;
+    for (0..questions) |_| at = (skipDnsName(msg, at) orelse return null) + 4;
+    for (0..answers) |_| {
+        at = skipDnsName(msg, at) orelse return null;
+        if (at + 10 > msg.len) return null;
+        const rtype = std.mem.readInt(u16, msg[at..][0..2], .big);
+        const rdlen = std.mem.readInt(u16, msg[at + 8 ..][0..2], .big);
+        at += 10;
+        if (at + rdlen > msg.len) return null;
+        if (rtype == 1 and rdlen == 4) return msg[at..][0..4].*;
+        at += rdlen;
+    }
+    return null;
+}
+
+fn skipDnsName(msg: []const u8, start: usize) ?usize {
+    var at = start;
+    while (at < msg.len) {
+        const len = msg[at];
+        if (len == 0) return at + 1;
+        if (len & 0xc0 == 0xc0) return if (at + 2 <= msg.len) at + 2 else null;
+        at += 1 + len;
+    }
+    return null;
+}
+
+fn cmdWget(cx: *Context, args: []const []const u8) u8 {
+    var quiet = false;
+    var output_path: ?[]const u8 = null;
+    var prefix_dir: ?[]const u8 = null;
+    var urls: std.ArrayList([]const u8) = .empty;
+    defer urls.deinit(cx.gpa);
+
+    var i: usize = 0;
+    while (i < args.len) : (i += 1) {
+        const arg = args[i];
+        if (std.mem.eql(u8, arg, "--quiet") or std.mem.eql(u8, arg, "-q")) {
+            quiet = true;
+        } else if (std.mem.eql(u8, arg, "-O") or (std.mem.startsWith(u8, arg, "-O") and arg.len > 2)) {
+            output_path = if (arg.len > 2) arg[2..] else blk: {
+                i += 1;
+                if (i >= args.len) {
+                    cx.errPrint("wget: option requires an argument -- 'O'\n", .{});
+                    return 1;
+                }
+                break :blk args[i];
+            };
+        } else if (std.mem.eql(u8, arg, "-P") or (std.mem.startsWith(u8, arg, "-P") and arg.len > 2)) {
+            prefix_dir = if (arg.len > 2) arg[2..] else blk: {
+                i += 1;
+                if (i >= args.len) {
+                    cx.errPrint("wget: option requires an argument -- 'P'\n", .{});
+                    return 1;
+                }
+                break :blk args[i];
+            };
+        } else if (arg.len > 1 and arg[0] == '-') {
+            cx.errPrint("wget: invalid option -- '{s}'\n", .{arg});
+            return 1;
+        } else {
+            urls.append(cx.gpa, arg) catch return 1;
+        }
+    }
+
+    if (urls.items.len == 0) {
+        cx.errPrint("wget: missing URL\nUsage: wget [-q] [-O file] [-P dir] <url>...\n", .{});
+        return 1;
+    }
+
+    var status: u8 = 0;
+    for (urls.items) |url| {
+        if (!std.mem.startsWith(u8, url, "http://") and !std.mem.startsWith(u8, url, "https://")) {
+            cx.errPrint("wget: '{s}': unsupported scheme (use http:// or https://)\n", .{url});
+            status = 1;
+            continue;
+        }
+        const uri = std.Uri.parse(url) catch {
+            cx.errPrint("wget: '{s}': invalid URL\n", .{url});
+            status = 1;
+            continue;
+        };
+        if (uri.host == null) {
+            cx.errPrint("wget: '{s}': missing host\n", .{url});
+            status = 1;
+            continue;
+        }
+
+        const fetched = wgetDownload(cx.gpa, url) catch |err| {
+            cx.errPrint("wget: {s}: {s}\n", .{ url, @errorName(err) });
+            status = 1;
+            continue;
+        };
+        defer if (fetched.body.len > 0) cx.gpa.free(fetched.body);
+
+        if (fetched.status != 200) {
+            cx.errPrint("wget: {s}: HTTP {d}\n", .{ url, fetched.status });
+            status = 1;
+            continue;
+        }
+
+        if (output_path) |out_arg| {
+            if (std.mem.eql(u8, out_arg, "-")) {
+                cx.write(fetched.body);
+                continue;
+            }
+        }
+
+        const display_name = output_path orelse urlDefaultFilename(url);
+        const dest_path = blk: {
+            if (output_path) |out_arg| {
+                break :blk cx.resolve(out_arg) catch {
+                    status = 1;
+                    continue;
+                };
+            }
+            if (prefix_dir) |pdir| {
+                const resolved_dir = cx.resolve(pdir) catch {
+                    status = 1;
+                    continue;
+                };
+                defer cx.gpa.free(resolved_dir);
+                mkdirParents(resolved_dir) catch |e| {
+                    cx.errPrint("wget: {s}: {s}\n", .{ pdir, describeErrno(e) });
+                    status = 1;
+                    continue;
+                };
+                break :blk joinPath(cx.gpa, resolved_dir, display_name) catch {
+                    status = 1;
+                    continue;
+                };
+            }
+            break :blk cx.resolve(display_name) catch {
+                status = 1;
+                continue;
+            };
+        };
+        defer cx.gpa.free(dest_path);
+
+        writeFileAll(dest_path, fetched.body, false) catch |e| {
+            cx.errPrint("wget: cannot write '{s}': {s}\n", .{ display_name, describeErrno(e) });
+            status = 1;
+            continue;
+        };
+
+        if (!quiet) {
+            var size_buf: [24]u8 = undefined;
+            cx.print("Saving to '{s}' ({s})\n", .{ display_name, formatHumanSize(&size_buf, fetched.body.len) });
+        }
+    }
+    return status;
+}
+
+const WgetResult = struct {
+    status: u16,
+    body: []u8,
+};
+
+fn wgetDownload(gpa: std.mem.Allocator, url: []const u8) !WgetResult {
+    var threaded: std.Io.Threaded = .init(gpa, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    var client: std.http.Client = .{ .allocator = gpa, .io = io };
+    defer client.deinit();
+
+    if (std.mem.startsWith(u8, url, "https://")) {
+        const now = std.Io.Clock.real.now(io);
+        client.ca_bundle.addCertsFromFilePathAbsolute(gpa, io, now, "/os/certs/ca-certificates.pem") catch {};
+        if (client.ca_bundle.map.count() == 0) {
+            client.ca_bundle.addCertsFromFilePathAbsolute(gpa, io, now, "/etc/ssl/certs/ca-certificates.crt") catch {};
+        }
+        client.now = now;
+    }
+
+    var out: std.Io.Writer.Allocating = .init(gpa);
+    errdefer out.deinit();
+    const res = try client.fetch(.{
+        .location = .{ .url = url },
+        .response_writer = &out.writer,
+        .keep_alive = false,
+    });
+    const code: u16 = @intFromEnum(res.status);
+    if (res.status != .ok) {
+        out.deinit();
+        return .{ .status = code, .body = &.{} };
+    }
+    if (out.written().len > max_file_bytes) return error.FileTooBig;
+    return .{ .status = code, .body = try out.toOwnedSlice() };
+}
+
+fn urlDefaultFilename(url: []const u8) []const u8 {
+    const after_scheme = if (std.mem.indexOf(u8, url, "://")) |idx| url[idx + 3 ..] else url;
+    const path_start = std.mem.indexOfScalar(u8, after_scheme, '/') orelse return "index.html";
+    const raw_path = after_scheme[path_start + 1 ..];
+    const no_query = if (std.mem.indexOfAny(u8, raw_path, "?#")) |q| raw_path[0..q] else raw_path;
+    const trimmed = std.mem.trimEnd(u8, no_query, "/");
+    if (trimmed.len == 0) return "index.html";
+    const base = if (std.mem.lastIndexOfScalar(u8, trimmed, '/')) |s| trimmed[s + 1 ..] else trimmed;
+    if (base.len == 0 or std.mem.eql(u8, base, ".") or std.mem.eql(u8, base, "..")) return "index.html";
+    return base;
+}
+
 // --- Tests ---------------------------------------------------------------------
 
 const testing = std.testing;
@@ -3391,3 +3967,27 @@ test "chmod mode parsing" {
     try testing.expectEqual(@as(?u16, 0o444), parseModeSpec("a=r", 0o755));
     try testing.expect(parseModeSpec("bad", 0o644) == null);
 }
+
+test "wget default filename extraction and DNS/ICMP helpers" {
+    try testing.expectEqualStrings("index.html", urlDefaultFilename("https://example.com"));
+    try testing.expectEqualStrings("index.html", urlDefaultFilename("https://example.com/"));
+    try testing.expectEqualStrings("apps.json", urlDefaultFilename("https://example.com/releases/apps.json?v=1"));
+    try testing.expectEqualStrings("archive.tar.xz", urlDefaultFilename("http://127.0.0.1:8080/dl/archive.tar.xz#sha"));
+
+    var qbuf: [300]u8 = undefined;
+    const q = buildDnsQuery(&qbuf, 0xabcd, "dazzle.local").?;
+    var ans: [64]u8 = undefined;
+    @memcpy(ans[0..q.len], q);
+    ans[2] = 0x81;
+    ans[3] = 0x80;
+    ans[7] = 1;
+    const rec = [_]u8{ 0xc0, 12, 0, 1, 0, 1, 0, 0, 0, 60, 0, 4, 192, 168, 1, 42 };
+    @memcpy(ans[q.len..][0..rec.len], &rec);
+    try testing.expectEqual(sys.network.Ip4{ 192, 168, 1, 42 }, parseDnsAnswer(ans[0 .. q.len + rec.len], 0xabcd).?);
+
+    var echo: [8]u8 = .{ 8, 0, 0, 0, 0x12, 0x34, 0x00, 0x01 };
+    const csum = icmpChecksum(&echo);
+    std.mem.writeInt(u16, echo[2..4], csum, .big);
+    try testing.expectEqual(@as(u16, 0), icmpChecksum(&echo));
+}
+
