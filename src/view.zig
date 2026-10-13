@@ -540,7 +540,7 @@ pub const TerminalArea = struct {
                     if (row.line_idx == self.shell.output.items.len) {
                         const abs_byte = row.start + pos.col;
                         if (abs_byte >= st.prompt_prefix_len) {
-                            st.cursor = @min(st.input.items.len, abs_byte - st.prompt_prefix_len);
+                            st.cursor = utf8At(st.input.items, abs_byte - st.prompt_prefix_len);
                         } else {
                             st.cursor = 0;
                         }
@@ -864,8 +864,15 @@ pub const TerminalArea = struct {
     }
 };
 
+fn utf8At(bytes: []const u8, i: usize) usize {
+    if (i >= bytes.len) return bytes.len;
+    var j = i;
+    while (j > 0 and bytes[j] & 0xc0 == 0x80) : (j -= 1) {}
+    return j;
+}
+
 fn utf8Before(bytes: []const u8, i: usize) usize {
-    var j = i -| 1;
+    var j = @min(i, bytes.len) -| 1;
     while (j > 0 and bytes[j] & 0xc0 == 0x80) : (j -= 1) {}
     return j;
 }
