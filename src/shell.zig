@@ -192,7 +192,7 @@ pub const Shell = struct {
                 v.value = new_val;
                 if (exported) v.exported = true;
                 if (std.mem.eql(u8, name, "HOME") and value.len > 0) {
-                    if ( self.gpa.dupe(u8, value)) |h| {
+                    if (self.gpa.dupe(u8, value)) |h| {
                         self.gpa.free(self.home);
                         self.home = h;
                     } else |_| {}
@@ -1412,4 +1412,3 @@ test "network tools: ping and wget over loopback" {
     try std.testing.expectEqual(@as(u8, 0), sh.last_status);
     try std.testing.expectEqualStrings("fetched from dazzle", lastStdout(&sh));
 }
-

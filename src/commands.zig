@@ -3990,4 +3990,3 @@ test "wget default filename extraction and DNS/ICMP helpers" {
     std.mem.writeInt(u16, echo[2..4], csum, .big);
     try testing.expectEqual(@as(u16, 0), icmpChecksum(&echo));
 }
-
