@@ -190,7 +190,7 @@ fn fromErrno(e: linux.E) FsError {
 
 pub fn statPath(path: []const u8, follow_links: bool) FsError!StatInfo {
     var buf: [4096]u8 = undefined;
-    const z = std.fmt.bufPrintZ(&buf, "{s}", .{path}) catch return error.NAMETOOLONG;
+    const z = std.mem.printSentinel(&buf, "{s}", .{path}, 0) catch return error.NAMETOOLONG;
     return statZ(z, follow_links);
 }
 
@@ -219,7 +219,7 @@ pub fn statZ(path_z: [*:0]const u8, follow_links: bool) FsError!StatInfo {
 /// whose statx size is 0, read in full too).
 pub fn readFileAll(gpa: std.mem.Allocator, path: []const u8) FsError![]u8 {
     var path_buf: [4096]u8 = undefined;
-    const path_z = std.fmt.bufPrintZ(&path_buf, "{s}", .{path}) catch return error.NAMETOOLONG;
+    const path_z = std.mem.printSentinel(&path_buf, "{s}", .{path}, 0) catch return error.NAMETOOLONG;
     if (statZ(path_z, true)) |st| {
         if (st.isDir()) return error.ISDIR;
     } else |_| {}
@@ -246,7 +246,7 @@ pub fn readFileAll(gpa: std.mem.Allocator, path: []const u8) FsError![]u8 {
 /// Writes `data` to `path` (truncating or appending).
 pub fn writeFileAll(path: []const u8, data: []const u8, append: bool) FsError!void {
     var path_buf: [4096]u8 = undefined;
-    const path_z = std.fmt.bufPrintZ(&path_buf, "{s}", .{path}) catch return error.NAMETOOLONG;
+    const path_z = std.mem.printSentinel(&path_buf, "{s}", .{path}, 0) catch return error.NAMETOOLONG;
     const flags: linux.O = .{
         .ACCMODE = .WRONLY,
         .CREAT = true,
@@ -480,7 +480,7 @@ fn cmdCd(cx: *Context, args: []const []const u8) u8 {
         return 1;
     }
     var buf: [4096]u8 = undefined;
-    const z = std.fmt.bufPrintZ(&buf, "{s}", .{dest}) catch return 1;
+    const z = std.mem.printSentinel(&buf, "{s}", .{dest}, 0) catch return 1;
     const rc = linux.open(z, .{ .ACCMODE = .RDONLY, .DIRECTORY = true, .CLOEXEC = true }, 0);
     const e = linux.errno(rc);
     if (e != .SUCCESS) {
@@ -605,7 +605,7 @@ fn makeLsEntry(gpa: std.mem.Allocator, display_name: []const u8, full_path: []co
     if (st_l.isLnk()) {
         var z_buf: [4096]u8 = undefined;
         var t_buf: [4096]u8 = undefined;
-        if (std.fmt.bufPrintZ(&z_buf, "{s}", .{full_path})) |z| {
+        if (std.mem.printSentinel(&z_buf, "{s}", .{full_path}, 0)) |z| {
             const rc = linux.readlink(z, &t_buf, t_buf.len);
             if (linux.errno(rc) == .SUCCESS) link_target = try gpa.dupe(u8, t_buf[0..rc]);
         } else |_| {}
@@ -620,7 +620,7 @@ fn makeLsEntry(gpa: std.mem.Allocator, display_name: []const u8, full_path: []co
 
 fn lsDir(cx: *Context, label: []const u8, full_path: []const u8, opts: LsOptions, show_header: bool, printed_block: *bool, now: i64) bool {
     var z_buf: [4096]u8 = undefined;
-    const z = std.fmt.bufPrintZ(&z_buf, "{s}", .{full_path}) catch return false;
+    const z = std.mem.printSentinel(&z_buf, "{s}", .{full_path}, 0) catch return false;
     const rc = linux.open(z, .{ .ACCMODE = .RDONLY, .DIRECTORY = true, .CLOEXEC = true }, 0);
     const e = linux.errno(rc);
     if (e != .SUCCESS) {
@@ -805,7 +805,7 @@ fn cmdMkdir(cx: *Context, args: []const []const u8) u8 {
 
 fn mkdirOne(path: []const u8) FsError!void {
     var buf: [4096]u8 = undefined;
-    const z = std.fmt.bufPrintZ(&buf, "{s}", .{path}) catch return error.NAMETOOLONG;
+    const z = std.mem.printSentinel(&buf, "{s}", .{path}, 0) catch return error.NAMETOOLONG;
     const e = linux.errno(linux.mkdir(z, 0o755));
     if (e != .SUCCESS) return fromErrno(e);
 }
@@ -856,7 +856,7 @@ fn cmdRmdir(cx: *Context, args: []const []const u8) u8 {
 
 fn rmdirPath(cx: *Context, label: []const u8, resolved: []const u8, parents: bool) bool {
     var buf: [4096]u8 = undefined;
-    const z = std.fmt.bufPrintZ(&buf, "{s}", .{resolved}) catch return false;
+    const z = std.mem.printSentinel(&buf, "{s}", .{resolved}, 0) catch return false;
     const e = linux.errno(linux.rmdir(z));
     if (e != .SUCCESS) {
         cx.errPrint("rmdir: failed to remove '{s}': {s}\n", .{ label, describeErrno(e) });
@@ -867,7 +867,7 @@ fn rmdirPath(cx: *Context, label: []const u8, resolved: []const u8, parents: boo
         while (std.mem.lastIndexOfScalar(u8, cur, '/')) |slash| {
             if (slash == 0) break;
             cur = cur[0..slash];
-            const cz = std.fmt.bufPrintZ(&buf, "{s}", .{cur}) catch break;
+            const cz = std.mem.printSentinel(&buf, "{s}", .{cur}, 0) catch break;
             if (linux.errno(linux.rmdir(cz)) != .SUCCESS) break;
         }
     }
@@ -933,7 +933,7 @@ fn removeEntry(cx: *Context, label: []const u8, full_path: []const u8, recursive
         return false;
     };
     var buf: [4096]u8 = undefined;
-    const z = std.fmt.bufPrintZ(&buf, "{s}", .{full_path}) catch return false;
+    const z = std.mem.printSentinel(&buf, "{s}", .{full_path}, 0) catch return false;
     if (st.isDir()) {
         if (recursive) {
             return removeDirTree(cx, label, full_path, force);
@@ -960,7 +960,7 @@ fn removeEntry(cx: *Context, label: []const u8, full_path: []const u8, recursive
 
 fn removeDirTree(cx: *Context, label: []const u8, full_path: []const u8, force: bool) bool {
     var z_buf: [4096]u8 = undefined;
-    const z = std.fmt.bufPrintZ(&z_buf, "{s}", .{full_path}) catch return false;
+    const z = std.mem.printSentinel(&z_buf, "{s}", .{full_path}, 0) catch return false;
     const rc = linux.open(z, .{ .ACCMODE = .RDONLY, .DIRECTORY = true, .CLOEXEC = true }, 0);
     const e = linux.errno(rc);
     if (e != .SUCCESS) {
@@ -1101,7 +1101,7 @@ fn copyItem(cx: *Context, src_label: []const u8, src_path: []const u8, dst_path:
 
 fn copyDir(cx: *Context, src_label: []const u8, src_path: []const u8, dst_path: []const u8, st: StatInfo, opts: CopyOptions) bool {
     var dst_buf: [4096]u8 = undefined;
-    const dst_z = std.fmt.bufPrintZ(&dst_buf, "{s}", .{dst_path}) catch return false;
+    const dst_z = std.mem.printSentinel(&dst_buf, "{s}", .{dst_path}, 0) catch return false;
     switch (linux.errno(linux.mkdir(dst_z, (st.mode & 0o777) | 0o700))) {
         .SUCCESS => {},
         .EXIST => {
@@ -1121,7 +1121,7 @@ fn copyDir(cx: *Context, src_label: []const u8, src_path: []const u8, dst_path: 
     }
 
     var src_buf: [4096]u8 = undefined;
-    const src_z = std.fmt.bufPrintZ(&src_buf, "{s}", .{src_path}) catch return false;
+    const src_z = std.mem.printSentinel(&src_buf, "{s}", .{src_path}, 0) catch return false;
     const rc = linux.open(src_z, .{ .ACCMODE = .RDONLY, .DIRECTORY = true, .CLOEXEC = true }, 0);
     const e = linux.errno(rc);
     if (e != .SUCCESS) {
@@ -1171,8 +1171,8 @@ fn copySymlink(cx: *Context, src_label: []const u8, src_path: []const u8, dst_pa
     var src_buf: [4096]u8 = undefined;
     var dst_buf: [4096]u8 = undefined;
     var target_buf: [4096]u8 = undefined;
-    const src_z = std.fmt.bufPrintZ(&src_buf, "{s}", .{src_path}) catch return false;
-    const dst_z = std.fmt.bufPrintZ(&dst_buf, "{s}", .{dst_path}) catch return false;
+    const src_z = std.mem.printSentinel(&src_buf, "{s}", .{src_path}, 0) catch return false;
+    const dst_z = std.mem.printSentinel(&dst_buf, "{s}", .{dst_path}, 0) catch return false;
     const n = linux.readlink(src_z, &target_buf, target_buf.len - 1);
     const re = linux.errno(n);
     if (re != .SUCCESS) {
@@ -1195,8 +1195,8 @@ fn copySymlink(cx: *Context, src_label: []const u8, src_path: []const u8, dst_pa
 fn copyRegFile(cx: *Context, src_label: []const u8, src_path: []const u8, dst_path: []const u8, st: StatInfo, opts: CopyOptions) bool {
     var src_buf: [4096]u8 = undefined;
     var dst_buf: [4096]u8 = undefined;
-    const src_z = std.fmt.bufPrintZ(&src_buf, "{s}", .{src_path}) catch return false;
-    const dst_z = std.fmt.bufPrintZ(&dst_buf, "{s}", .{dst_path}) catch return false;
+    const src_z = std.mem.printSentinel(&src_buf, "{s}", .{src_path}, 0) catch return false;
+    const dst_z = std.mem.printSentinel(&dst_buf, "{s}", .{dst_path}, 0) catch return false;
     if (opts.no_clobber) {
         if (statZ(dst_z, false)) |_| return true else |_| {}
     }
@@ -1310,8 +1310,8 @@ fn cmdMv(cx: *Context, args: []const []const u8) u8 {
         }
         var from_buf: [4096]u8 = undefined;
         var to_buf: [4096]u8 = undefined;
-        const from_z = std.fmt.bufPrintZ(&from_buf, "{s}", .{src_resolved}) catch continue;
-        const to_z = std.fmt.bufPrintZ(&to_buf, "{s}", .{target}) catch continue;
+        const from_z = std.mem.printSentinel(&from_buf, "{s}", .{src_resolved}, 0) catch continue;
+        const to_z = std.mem.printSentinel(&to_buf, "{s}", .{target}, 0) catch continue;
         switch (linux.errno(linux.rename(from_z, to_z))) {
             .SUCCESS => {},
             .XDEV => {
@@ -1357,7 +1357,7 @@ fn cmdTouch(cx: *Context, args: []const []const u8) u8 {
         const resolved = cx.resolve(raw) catch continue;
         defer cx.gpa.free(resolved);
         var buf: [4096]u8 = undefined;
-        const z = std.fmt.bufPrintZ(&buf, "{s}", .{resolved}) catch continue;
+        const z = std.mem.printSentinel(&buf, "{s}", .{resolved}, 0) catch continue;
         if (statZ(z, true)) |_| {
             sys.setFileTimes(linux.AT.FDCWD, z, sec, nsec) catch {
                 cx.errPrint("touch: cannot touch '{s}': Permission denied\n", .{raw});
@@ -1417,7 +1417,7 @@ fn cmdLn(cx: *Context, args: []const []const u8) u8 {
     defer cx.gpa.free(final_link);
 
     var link_buf: [4096]u8 = undefined;
-    const link_z = std.fmt.bufPrintZ(&link_buf, "{s}", .{final_link}) catch return 1;
+    const link_z = std.mem.printSentinel(&link_buf, "{s}", .{final_link}, 0) catch return 1;
     if (force) {
         if (statZ(link_z, false)) |st| {
             if (!st.isDir()) _ = linux.unlink(link_z);
@@ -1426,7 +1426,7 @@ fn cmdLn(cx: *Context, args: []const []const u8) u8 {
 
     if (symbolic) {
         var target_buf: [4096]u8 = undefined;
-        const target_z = std.fmt.bufPrintZ(&target_buf, "{s}", .{target_raw}) catch return 1;
+        const target_z = std.mem.printSentinel(&target_buf, "{s}", .{target_raw}, 0) catch return 1;
         const e = linux.errno(linux.symlink(target_z, link_z));
         if (e != .SUCCESS) {
             cx.errPrint("ln: failed to create symbolic link '{s}': {s}\n", .{ link_raw, describeErrno(e) });
@@ -1438,7 +1438,7 @@ fn cmdLn(cx: *Context, args: []const []const u8) u8 {
     const target_resolved = cx.resolve(target_raw) catch return 1;
     defer cx.gpa.free(target_resolved);
     var target_buf: [4096]u8 = undefined;
-    const target_z = std.fmt.bufPrintZ(&target_buf, "{s}", .{target_resolved}) catch return 1;
+    const target_z = std.mem.printSentinel(&target_buf, "{s}", .{target_resolved}, 0) catch return 1;
     const e = linux.errno(linux.link(target_z, link_z));
     if (e != .SUCCESS) {
         cx.errPrint("ln: failed to create hard link '{s}': {s}\n", .{ link_raw, describeErrno(e) });
@@ -1490,7 +1490,7 @@ fn chmodPath(cx: *Context, label: []const u8, full_path: []const u8, spec: []con
         return false;
     };
     var buf: [4096]u8 = undefined;
-    const z = std.fmt.bufPrintZ(&buf, "{s}", .{full_path}) catch return false;
+    const z = std.mem.printSentinel(&buf, "{s}", .{full_path}, 0) catch return false;
     const e = linux.errno(linux.chmod(z, new_mode));
     if (e != .SUCCESS) {
         cx.errPrint("chmod: changing permissions of '{s}': {s}\n", .{ label, describeErrno(e) });
@@ -1617,7 +1617,7 @@ fn cmdStat(cx: *Context, args: []const []const u8) u8 {
         if (st.isLnk()) {
             var z_buf: [4096]u8 = undefined;
             var t_buf: [4096]u8 = undefined;
-            const target = if (std.fmt.bufPrintZ(&z_buf, "{s}", .{resolved})) |z| blk: {
+            const target = if (std.mem.printSentinel(&z_buf, "{s}", .{resolved}, 0)) |z| blk: {
                 const rc = linux.readlink(z, &t_buf, t_buf.len);
                 break :blk if (linux.errno(rc) == .SUCCESS) t_buf[0..rc] else "";
             } else |_| "";
@@ -1658,7 +1658,7 @@ fn cmdReadlink(cx: *Context, args: []const []const u8) u8 {
         defer cx.gpa.free(resolved);
         var z_buf: [4096]u8 = undefined;
         var t_buf: [4096]u8 = undefined;
-        const z = std.fmt.bufPrintZ(&z_buf, "{s}", .{resolved}) catch continue;
+        const z = std.mem.printSentinel(&z_buf, "{s}", .{resolved}, 0) catch continue;
         const rc = linux.readlink(z, &t_buf, t_buf.len);
         if (linux.errno(rc) == .SUCCESS) {
             if (canonical and t_buf[0] != '/') {
@@ -1709,7 +1709,7 @@ fn cmdFile(cx: *Context, args: []const []const u8) u8 {
                 if (st.size == 0) break :blk "empty";
                 var z_buf: [4096]u8 = undefined;
                 var hdr_buf: [512]u8 = undefined;
-                const z = std.fmt.bufPrintZ(&z_buf, "{s}", .{resolved}) catch break :blk "regular file";
+                const z = std.mem.printSentinel(&z_buf, "{s}", .{resolved}, 0) catch break :blk "regular file";
                 const sample = sys.readFile(z, &hdr_buf) orelse break :blk "regular file";
                 break :blk sniffData(sample);
             },
@@ -2072,7 +2072,7 @@ fn grepPath(cx: *Context, pat: []const u8, label: []const u8, full_path: []const
             return false;
         }
         var z_buf: [4096]u8 = undefined;
-        const z = std.fmt.bufPrintZ(&z_buf, "{s}", .{full_path}) catch return false;
+        const z = std.mem.printSentinel(&z_buf, "{s}", .{full_path}, 0) catch return false;
         const rc = linux.open(z, .{ .ACCMODE = .RDONLY, .DIRECTORY = true, .CLOEXEC = true }, 0);
         if (linux.errno(rc) != .SUCCESS) return false;
         const fd: linux.fd_t = @intCast(rc);
@@ -2141,7 +2141,7 @@ fn grepBuffer(cx: *Context, pat: []const u8, data: []const u8, filename: ?[]cons
         line_no += 1;
 
         const found = if (opts.ignore_case)
-            std.ascii.indexOfIgnoreCase(line, pat) != null
+            std.ascii.findIgnoreCase(line, pat) != null
         else
             std.mem.indexOf(u8, line, pat) != null;
         const hit = if (opts.invert) !found else found;
@@ -2238,7 +2238,7 @@ fn findWalk(cx: *Context, label: []const u8, full_path: []const u8, filter: Find
     if (filter.max_depth) |m| if (depth >= m) return true;
 
     var z_buf: [4096]u8 = undefined;
-    const z = std.fmt.bufPrintZ(&z_buf, "{s}", .{full_path}) catch return false;
+    const z = std.mem.printSentinel(&z_buf, "{s}", .{full_path}, 0) catch return false;
     const rc = linux.open(z, .{ .ACCMODE = .RDONLY, .DIRECTORY = true, .CLOEXEC = true }, 0);
     if (linux.errno(rc) != .SUCCESS) return false;
     const fd: linux.fd_t = @intCast(rc);
@@ -2783,7 +2783,7 @@ fn cmdPs(cx: *Context, _: []const []const u8) u8 {
             const pid = std.fmt.parseInt(u32, name, 10) catch continue;
             var path_buf: [64]u8 = undefined;
             var stat_buf: [1024]u8 = undefined;
-            const stat_path = std.fmt.bufPrintZ(&path_buf, "/proc/{d}/stat", .{pid}) catch continue;
+            const stat_path = std.mem.printSentinel(&path_buf, "/proc/{d}/stat", .{pid}, 0) catch continue;
             const stat_text = sys.readFile(stat_path, &stat_buf) orelse continue;
             const open_paren = std.mem.indexOfScalar(u8, stat_text, '(') orelse continue;
             const close_paren = std.mem.lastIndexOfScalar(u8, stat_text, ')') orelse continue;
@@ -2798,7 +2798,7 @@ fn cmdPs(cx: *Context, _: []const []const u8) u8 {
                 if (fi == 20) rss_pages = std.fmt.parseInt(u64, tok, 10) catch 0;
             }
             var cmd_buf: [256]u8 = undefined;
-            const cmd_path = std.fmt.bufPrintZ(&path_buf, "/proc/{d}/cmdline", .{pid}) catch continue;
+            const cmd_path = std.mem.printSentinel(&path_buf, "/proc/{d}/cmdline", .{pid}, 0) catch continue;
             const raw_cmd = sys.readFile(cmd_path, &cmd_buf) orelse "";
             const trimmed_cmd = std.mem.trimEnd(u8, raw_cmd, "\x00");
             const cmd_owned = if (trimmed_cmd.len > 0) blk: {
@@ -2929,7 +2929,7 @@ fn cmdDf(cx: *Context, args: []const []const u8) u8 {
             const resolved = cx.resolve(raw) catch continue;
             defer cx.gpa.free(resolved);
             var z_buf: [4096]u8 = undefined;
-            const z = std.fmt.bufPrintZ(&z_buf, "{s}", .{resolved}) catch continue;
+            const z = std.mem.printSentinel(&z_buf, "{s}", .{resolved}, 0) catch continue;
             const ds = sys.diskSpace(z) orelse {
                 cx.errPrint("df: {s}: No such file or directory\n", .{raw});
                 status = 1;
@@ -2950,7 +2950,7 @@ fn cmdDf(cx: *Context, args: []const []const u8) u8 {
             const fstype = fields.next() orelse "";
             if (std.mem.eql(u8, fstype, "proc") or std.mem.eql(u8, fstype, "sysfs") or std.mem.eql(u8, fstype, "devpts") or std.mem.eql(u8, fstype, "cgroup2") or std.mem.eql(u8, fstype, "mqueue")) continue;
             var z_buf: [512]u8 = undefined;
-            const z = std.fmt.bufPrintZ(&z_buf, "{s}", .{mnt}) catch continue;
+            const z = std.mem.printSentinel(&z_buf, "{s}", .{mnt}, 0) catch continue;
             const ds = sys.diskSpace(z) orelse continue;
             if (ds.total == 0) continue;
             printDfRow(cx, dev, ds.total, ds.free, mnt, human);
@@ -3027,7 +3027,7 @@ fn duWalk(cx: *Context, label: []const u8, full_path: []const u8, summary: bool,
 
     var total: u64 = 0;
     var z_buf: [4096]u8 = undefined;
-    if (std.fmt.bufPrintZ(&z_buf, "{s}", .{full_path})) |z| {
+    if (std.mem.printSentinel(&z_buf, "{s}", .{full_path}, 0)) |z| {
         const rc = linux.open(z, .{ .ACCMODE = .RDONLY, .DIRECTORY = true, .CLOEXEC = true }, 0);
         if (linux.errno(rc) == .SUCCESS) {
             const fd: linux.fd_t = @intCast(rc);
@@ -3295,7 +3295,7 @@ fn cmdOpen(cx: *Context, args: []const []const u8) u8 {
         return 1;
     };
     var file_buf: [4096]u8 = undefined;
-    const file_z = std.fmt.bufPrintZ(&file_buf, "{s}", .{resolved}) catch return 1;
+    const file_z = std.mem.printSentinel(&file_buf, "{s}", .{resolved}, 0) catch return 1;
     sys.apps.launch(editor, file_z, cx.shell.launch_env) catch |err| {
         cx.errPrint("open: cannot start {s}: {s}\n", .{ editor, @errorName(err) });
         return 1;

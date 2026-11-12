@@ -237,7 +237,7 @@ pub const Shell = struct {
         try self.setVar("PWD", self.cwd.items, true);
 
         var z_buf: [4096]u8 = undefined;
-        if (std.fmt.bufPrintZ(&z_buf, "{s}", .{norm})) |z| {
+        if (std.mem.printSentinel(&z_buf, "{s}", .{norm}, 0)) |z| {
             _ = linux.chdir(z);
         } else |_| {}
     }
@@ -758,7 +758,7 @@ pub const Shell = struct {
         defer self.gpa.free(resolved_dir);
 
         var z_buf: [4096]u8 = undefined;
-        const z = std.fmt.bufPrintZ(&z_buf, "{s}", .{resolved_dir}) catch return;
+        const z = std.mem.printSentinel(&z_buf, "{s}", .{resolved_dir}, 0) catch return;
         const rc = linux.open(z, .{ .ACCMODE = .RDONLY, .DIRECTORY = true, .CLOEXEC = true }, 0);
         if (linux.errno(rc) != .SUCCESS) return;
         const fd: linux.fd_t = @intCast(rc);
@@ -856,7 +856,7 @@ pub const Shell = struct {
         defer self.gpa.free(resolved_dir);
 
         var z_buf: [4096]u8 = undefined;
-        const z = std.fmt.bufPrintZ(&z_buf, "{s}", .{resolved_dir}) catch return res;
+        const z = std.mem.printSentinel(&z_buf, "{s}", .{resolved_dir}, 0) catch return res;
         const rc = linux.open(z, .{ .ACCMODE = .RDONLY, .DIRECTORY = true, .CLOEXEC = true }, 0);
         if (linux.errno(rc) != .SUCCESS) return res;
         const fd: linux.fd_t = @intCast(rc);
