@@ -7,18 +7,18 @@
 
 const std = @import("std");
 const sys = @import("sys");
-const locale = @import("locale");
 const app = @import("app");
-const ui = @import("ui");
+const kete = @import("kete");
+const kete_vc4 = @import("kete_vc4");
 const shell_mod = @import("shell.zig");
 const commands = @import("commands.zig");
 const view = @import("view.zig");
 
 const print = sys.print;
 
-pub fn main(init: std.process.Init.Minimal) u8 {
+pub fn main(init: std.process.Init) u8 {
     sys.logToKmsgIfStderr();
-    var args = init.args.iterate();
+    var args = init.minimal.args.iterate();
     _ = args.skip();
     const initial_dir: ?[:0]const u8 = if (args.next()) |p| std.mem.span(p.ptr) else null;
     run(init, initial_dir) catch |err| {
@@ -28,16 +28,28 @@ pub fn main(init: std.process.Init.Minimal) u8 {
     return 0;
 }
 
-fn run(init: std.process.Init.Minimal, initial_dir: ?[:0]const u8) !void {
-    locale.current = locale.load().language;
+/// The window's root: the shell, and closing the window (`exit`).
+const Root = struct {
+    shell: *shell_mod.Shell,
+    window: ?*kete.App.Window = null,
+
+    pub fn build(r: *const Root, cx: *kete.BuildContext) kete.Widget {
+        return cx.make(view.Terminal{
+            .shell = r.shell,
+            .on_close = if (r.window) |w| .of(w, close) else null,
+        });
+    }
+
+    fn close(w: *kete.App.Window) void {
+        w.close();
+    }
+};
+
+fn run(init: std.process.Init, initial_dir: ?[:0]const u8) !void {
     const gpa = std.heap.page_allocator;
-    const a = try ui.App.open(gpa, init.environ, .{
-        .title = "Terminal",
-        .app_id = "dazzle-terminal",
-        .size = view.open_size,
-        .min_size = view.min_size,
-    });
-    defer a.close();
+    var host: kete_vc4.Host = undefined;
+    try host.init(gpa, init.io, init.minimal.environ, .{ .app_id = "dazzle-terminal" });
+    defer host.deinit();
 
     // Build launch environment for apps opened via `open`.
     var child_env: app.ChildEnv = undefined;
@@ -46,18 +58,20 @@ fn run(init: std.process.Init.Minimal, initial_dir: ?[:0]const u8) !void {
     else |_|
         null;
 
-    var sh = try shell_mod.Shell.init(gpa, start_dir, child_env.init(init.environ, sys.system.user_dir));
+    var sh = try shell_mod.Shell.init(gpa, start_dir, child_env.init(init.minimal.environ, sys.system.user_dir));
     defer sh.deinit();
 
-    while (try a.step(60 * std.time.ns_per_s)) {
+    var root: Root = .{ .shell = &sh };
+    root.window = try host.app.openWindow(.{
+        .title = "Terminal",
+        .root = .of(&root),
+        .size = view.open_size,
+        .min_size = view.min_size,
+        .on_close_request = .close,
+    });
+
+    while (try host.step(60 * std.time.ns_per_s)) {
         if (sh.should_exit) return;
-        const now = sys.nowNs();
-        a.takeInput();
-        if (sh.should_exit or a.controls.quit) return;
-        try a.draw(now, view.Terminal{
-            .shell = &sh,
-            .on_close = .of(&a.controls, app.Controls.close),
-        });
     }
 }
 

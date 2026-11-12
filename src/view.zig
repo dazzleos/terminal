@@ -3,30 +3,20 @@
 //! at the bottom showing the working directory and last exit status.
 
 const std = @import("std");
-const ui = @import("ui");
-const gfx = @import("gfx");
-const font = @import("font");
+const kete = @import("kete");
+const gfx = kete.gfx;
+const font = kete.font;
 const shell_mod = @import("shell.zig");
 
 pub const min_size = [2]u32{ 480, 320 };
 pub const open_size = [2]u32{ 960, 720 };
 
-// Additional Linux key codes (input-event-codes.h) for shell editing shortcuts.
-const key_w: u32 = 17;
-const key_e: u32 = 18;
-const key_u: u32 = 22;
-const key_d: u32 = 32;
-const key_k: u32 = 37;
-const key_l: u32 = 38;
-
 pub const Terminal = struct {
     shell: *shell_mod.Shell,
-    on_close: ?ui.Callback = null,
-    on_maximize: ?ui.Callback = null,
-    on_drag: ?ui.Callback = null,
-    maximized: bool = true,
+    /// Closes the window (`exit`).
+    on_close: ?kete.Callback = null,
 
-    pub fn build(self: *const Terminal, cx: *ui.Context) ui.Widget {
+    pub fn build(self: *const Terminal, cx: *kete.BuildContext) kete.Widget {
         const t = cx.theme();
         const cwd = self.shell.cwd.items;
         const status_text = if (self.shell.last_status == 0)
@@ -35,15 +25,8 @@ pub const Terminal = struct {
             cx.fmt("Exit {d}", .{self.shell.last_status});
         const status_color = if (self.shell.last_status == 0) t.on_surface_variant else t.@"error";
 
-        return cx.make(ui.Column{ .cross_axis_alignment = .stretch, .children = &.{
-            cx.make(ui.TitleBar{
-                .title = "Terminal",
-                .on_close = self.on_close,
-                .on_maximize = self.on_maximize,
-                .on_drag = self.on_drag,
-                .maximized = self.maximized,
-            }),
-            cx.make(ui.Expanded{ .child = cx.make(ui.Padding{
+        return cx.make(kete.Column{ .cross_axis_alignment = .stretch, .children = &.{
+            cx.make(kete.Expanded{ .child = cx.make(kete.Padding{
                 .padding = .all(12),
                 .child = cx.make(TerminalArea{
                     .shell = self.shell,
@@ -51,16 +34,16 @@ pub const Terminal = struct {
                     .autofocus = true,
                 }),
             }) }),
-            cx.make(ui.Padding{
+            cx.make(kete.Padding{
                 .padding = .{ .left = 16, .right = 16, .bottom = 10 },
-                .child = cx.make(ui.Row{ .spacing = 16, .children = &.{
-                    cx.make(ui.Expanded{ .child = cx.make(ui.Text{
+                .child = cx.make(kete.Row{ .spacing = 16, .children = &.{
+                    cx.make(kete.Expanded{ .child = cx.make(kete.Text{
                         .text = cwd,
                         .style = .{ .size = 15, .color = t.on_surface_variant },
                         .wrap = false,
                         .ellipsis = true,
                     }) }),
-                    cx.make(ui.Text{
+                    cx.make(kete.Text{
                         .text = status_text,
                         .style = .{ .size = 15, .color = status_color },
                         .wrap = false,
@@ -75,7 +58,7 @@ pub const TerminalArea = struct {
     shell: *shell_mod.Shell,
     size: f32 = 16,
     autofocus: bool = true,
-    on_exit: ?ui.Callback = null,
+    on_exit: ?kete.Callback = null,
 
     pub const pad: f32 = 12;
 
@@ -90,8 +73,8 @@ pub const TerminalArea = struct {
     pub const State = struct {
         gpa: ?std.mem.Allocator = null,
         shell: ?*shell_mod.Shell = null,
-        node: ?*ui.Node = null,
-        on_exit: ?ui.Callback = null,
+        node: ?*kete.WidgetNode = null,
+        on_exit: ?kete.Callback = null,
         input: std.ArrayList(u8) = .empty,
         saved_input: std.ArrayList(u8) = .empty,
         cursor: usize = 0,
@@ -256,12 +239,12 @@ pub const TerminalArea = struct {
         }
     };
 
-    fn style(self: *const TerminalArea, n: *const ui.Node) ?font.Style {
+    fn style(self: *const TerminalArea, n: *const kete.WidgetNode) ?font.Style {
         const f = n.ui.font orelse return null;
         return .{ .font = f, .size = self.size };
     }
 
-    fn remember(self: *const TerminalArea, n: *ui.Node) *State {
+    fn remember(self: *const TerminalArea, n: *kete.WidgetNode) *State {
         const st = n.state(State);
         st.gpa = n.ui.gpa;
         st.shell = self.shell;
@@ -270,7 +253,7 @@ pub const TerminalArea = struct {
         return st;
     }
 
-    pub fn layout(self: *const TerminalArea, n: *ui.Node, c: ui.Constraints) ui.Size {
+    pub fn layout(self: *const TerminalArea, n: *kete.WidgetNode, c: kete.Constraints) kete.Size {
         const st = self.remember(n);
         if (self.autofocus and !st.autofocused) {
             st.autofocused = true;
@@ -295,7 +278,7 @@ pub const TerminalArea = struct {
         return size;
     }
 
-    fn buildRows(self: *const TerminalArea, n: *ui.Node, st: *State, avail_w: f32) void {
+    fn buildRows(self: *const TerminalArea, n: *kete.WidgetNode, st: *State, avail_w: f32) void {
         const g = n.ui.gpa;
         const sh = self.shell;
         st.rows.clearRetainingCapacity();
@@ -389,8 +372,8 @@ pub const TerminalArea = struct {
         }
     }
 
-    pub fn paint(self: *const TerminalArea, n: *ui.Node, p: *ui.Painter) void {
-        const t = &n.ui.theme;
+    pub fn paint(self: *const TerminalArea, n: *kete.WidgetNode, p: *kete.Painter) void {
+        const t = n.theme();
         const st = n.state(State);
         const c = p.canvas();
         const r: gfx.Rect = .{ .x = 0, .y = 0, .w = n.size.w, .h = n.size.h };
@@ -521,11 +504,11 @@ pub const TerminalArea = struct {
         }
     }
 
-    pub fn event(self: *const TerminalArea, n: *ui.Node, e: ui.Event) bool {
+    pub fn event(self: *const TerminalArea, n: *kete.WidgetNode, e: kete.Event) bool {
         const st = self.remember(n);
         switch (e) {
             .press => |pr| {
-                if (pr.button != ui.btn_left) return false;
+                if (pr.button != .left) return false;
                 n.ui.focus(n);
                 const pos = self.hitPos(n, st, pr.pos);
                 st.sel_anchor_row = pos.row;
@@ -602,7 +585,7 @@ pub const TerminalArea = struct {
 
     const HitPos = struct { row: usize, col: usize };
 
-    fn hitPos(self: *const TerminalArea, n: *ui.Node, st: *State, pt: ui.Point) HitPos {
+    fn hitPos(self: *const TerminalArea, n: *kete.WidgetNode, st: *State, pt: kete.Point) HitPos {
         if (st.rows.items.len == 0) return .{ .row = 0, .col = 0 };
         const s = self.style(n) orelse return .{ .row = 0, .col = 0 };
         const lh = s.lineHeight();
@@ -629,13 +612,13 @@ pub const TerminalArea = struct {
         return .{ .row = row_idx, .col = slice.len };
     }
 
-    fn handleKey(self: *const TerminalArea, n: *ui.Node, st: *State, k: ui.Event.Key) void {
+    fn handleKey(self: *const TerminalArea, n: *kete.WidgetNode, st: *State, k: kete.Event.Key) void {
         const g = n.ui.gpa;
         const sh = self.shell;
 
         if (k.ctrl) {
-            switch (k.code) {
-                ui.keymap.key_c => {
+            switch (k.key) {
+                .c => {
                     if (k.shift or st.hasSelection()) {
                         st.copy();
                         st.clearSelection();
@@ -657,11 +640,11 @@ pub const TerminalArea = struct {
                     }
                     return;
                 },
-                ui.keymap.key_v => {
+                .v => {
                     st.paste();
                     return;
                 },
-                ui.keymap.key_a => {
+                .a => {
                     if (k.shift) {
                         st.selectAll();
                     } else {
@@ -670,16 +653,16 @@ pub const TerminalArea = struct {
                     }
                     return;
                 },
-                key_e => {
+                .e => {
                     st.cursor = st.input.items.len;
                     st.follow_bottom = true;
                     return;
                 },
-                key_l => {
+                .l => {
                     st.clearTerminal();
                     return;
                 },
-                key_u => {
+                .u => {
                     if (st.cursor > 0) {
                         st.input.replaceRangeAssumeCapacity(0, st.cursor, &.{});
                         st.cursor = 0;
@@ -687,14 +670,14 @@ pub const TerminalArea = struct {
                     st.follow_bottom = true;
                     return;
                 },
-                key_k => {
+                .k => {
                     if (st.cursor < st.input.items.len) {
                         st.input.shrinkRetainingCapacity(st.cursor);
                     }
                     st.follow_bottom = true;
                     return;
                 },
-                key_w => {
+                .w => {
                     const prev = wordBefore(st.input.items, st.cursor);
                     if (prev < st.cursor) {
                         st.input.replaceRangeAssumeCapacity(prev, st.cursor - prev, &.{});
@@ -703,7 +686,7 @@ pub const TerminalArea = struct {
                     st.follow_bottom = true;
                     return;
                 },
-                key_d => {
+                .d => {
                     if (st.input.items.len == 0) {
                         sh.should_exit = true;
                         if (self.on_exit) |cb| cb.call();
@@ -713,12 +696,12 @@ pub const TerminalArea = struct {
                     }
                     return;
                 },
-                ui.keymap.left => {
+                .left => {
                     st.cursor = wordBefore(st.input.items, st.cursor);
                     st.follow_bottom = true;
                     return;
                 },
-                ui.keymap.right => {
+                .right => {
                     st.cursor = wordAfter(st.input.items, st.cursor);
                     st.follow_bottom = true;
                     return;
@@ -727,14 +710,14 @@ pub const TerminalArea = struct {
             }
         }
 
-        switch (k.code) {
-            ui.keymap.enter, ui.keymap.keypad_enter => {
+        switch (k.key) {
+            .enter, .keypad_enter => {
                 st.submitLine();
                 if (sh.should_exit) {
                     if (self.on_exit) |cb| cb.call();
                 }
             },
-            ui.keymap.backspace => {
+            .backspace => {
                 st.clearSelection();
                 st.follow_bottom = true;
                 if (st.cursor > 0) {
@@ -743,7 +726,7 @@ pub const TerminalArea = struct {
                     st.cursor = prev;
                 }
             },
-            ui.keymap.delete => {
+            .delete => {
                 st.clearSelection();
                 st.follow_bottom = true;
                 if (st.cursor < st.input.items.len) {
@@ -751,27 +734,27 @@ pub const TerminalArea = struct {
                     st.input.replaceRangeAssumeCapacity(st.cursor, next - st.cursor, &.{});
                 }
             },
-            ui.keymap.left => {
+            .left => {
                 st.clearSelection();
                 st.follow_bottom = true;
                 if (st.cursor > 0) st.cursor = utf8Before(st.input.items, st.cursor);
             },
-            ui.keymap.right => {
+            .right => {
                 st.clearSelection();
                 st.follow_bottom = true;
                 if (st.cursor < st.input.items.len) st.cursor = utf8After(st.input.items, st.cursor);
             },
-            ui.keymap.home => {
+            .home => {
                 st.clearSelection();
                 st.follow_bottom = true;
                 st.cursor = 0;
             },
-            ui.keymap.end => {
+            .end => {
                 st.clearSelection();
                 st.follow_bottom = true;
                 st.cursor = st.input.items.len;
             },
-            ui.keymap.up => {
+            .up => {
                 st.clearSelection();
                 st.follow_bottom = true;
                 const hist = sh.history.items;
@@ -790,7 +773,7 @@ pub const TerminalArea = struct {
                 st.input.appendSlice(g, chosen) catch return;
                 st.cursor = st.input.items.len;
             },
-            ui.keymap.down => {
+            .down => {
                 st.clearSelection();
                 st.follow_bottom = true;
                 const idx = st.history_index orelse return;
@@ -808,11 +791,11 @@ pub const TerminalArea = struct {
                     st.cursor = st.input.items.len;
                 }
             },
-            ui.keymap.page_up => {
+            .page_up => {
                 st.follow_bottom = false;
                 st.scroll = @max(0, st.scroll - @max(40, n.size.h - 3 * pad));
             },
-            ui.keymap.page_down => {
+            .page_down => {
                 st.scroll += @max(40, n.size.h - 3 * pad);
                 if (self.style(n)) |s| {
                     const lh = s.lineHeight();
@@ -824,7 +807,7 @@ pub const TerminalArea = struct {
                     }
                 }
             },
-            ui.keymap.tab => {
+            .tab => {
                 st.clearSelection();
                 st.follow_bottom = true;
                 var comp = sh.complete(st.input.items, st.cursor, g) catch return;
@@ -902,27 +885,27 @@ fn wordAfter(bytes: []const u8, i: usize) usize {
 
 const testing = std.testing;
 
-fn overflows(node: *ui.Node) bool {
+fn overflows(node: *kete.WidgetNode) bool {
     if (node.overflow.any()) return true;
     for (node.children.items) |ch| if (overflows(ch)) return true;
     return false;
 }
 
-fn findType(n: *ui.Node, comptime T: type) ?*ui.Node {
+fn findType(n: *kete.WidgetNode, comptime T: type) ?*kete.WidgetNode {
     if (n.widget.is(T)) return n;
     for (n.children.items) |ch| if (findType(ch, T)) |f| return f;
     return null;
 }
 
-fn findText(n: *ui.Node, text: []const u8) ?*ui.Node {
-    if (n.widget.as(ui.Text)) |tx| if (std.mem.eql(u8, tx.text, text)) return n;
+fn findText(n: *kete.WidgetNode, text: []const u8) ?*kete.WidgetNode {
+    if (n.widget.as(kete.Text)) |tx| if (std.mem.eql(u8, tx.text, text)) return n;
     for (n.children.items) |ch| if (findText(ch, text)) |f| return f;
     return null;
 }
 
 test "terminal view lays out cleanly at all window sizes and handles interactive typing and history" {
     const f = try font.Font.init(@embedFile("FiraSans-Regular.ttf"));
-    const u = try ui.Ui.create(testing.allocator, &f);
+    const u = try kete.ui.WindowUi.create(testing.allocator, testing.io, &f);
     defer u.destroy();
 
     var sh = try shell_mod.Shell.initTest(testing.allocator, "/");
@@ -933,7 +916,6 @@ test "terminal view lays out cleanly at all window sizes and handles interactive
         u.frame(size[0], size[1], 0, term);
         try testing.expect(!overflows(u.root.?));
     }
-    try testing.expect(findText(u.root.?, "Terminal") != null);
     try testing.expect(u.focused != null and u.focused.?.widget.is(TerminalArea));
 
     const area = findType(u.root.?, TerminalArea).?;
@@ -947,13 +929,11 @@ test "terminal view lays out cleanly at all window sizes and handles interactive
     try testing.expectEqualStrings("hello", sh.output.items[1].text);
 
     // Press Up arrow to recall `echo hello` from history.
-    u.keyEvent(ui.keymap.up, true);
+    u.keyEvent(.up, true);
     try testing.expectEqualStrings("echo hello", st.input.items);
 
     // Press Ctrl+L to clear scrollback.
-    u.keyEvent(ui.keymap.left_ctrl, true);
-    u.keyEvent(key_l, true);
-    u.keyEvent(ui.keymap.left_ctrl, false);
+    u.key(.{ .key = .l, .pressed = true, .ctrl = true });
     try testing.expectEqual(@as(usize, 0), sh.output.items.len);
 }
 
